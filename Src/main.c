@@ -92,6 +92,7 @@ int main(void)
 	uint8_t mpu_ok[15] = {"MPU WORK FINE\n"};
 	uint8_t mpu_not[17] = {"MPU NOT WORKING\n"};
 	uint8_t data[100] = {0, };
+	uint8_t speed = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration----------------------------------------------------------*/
@@ -168,7 +169,18 @@ int main(void)
 	sprintf(data, "g_x:%06d, g_y:%06d, g_z:%06d, a_x:%06d, a_y:%06d, a_z:%06d", g_x,g_y,g_z,a_x,a_y,a_z);
 	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
 
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);  //45 이상 넘기면 최고속도
+	speed = a_y / 1000;
+	__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed);  //45 이상 넘기면 최고속도
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed);  //45 이상 넘기면 최고속도
+
+    if(a_y > 0){
+  	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
+	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
+    }
+    else if (a_y < 0){
+	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 1);
+	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 1);
+    }
 
 
 
