@@ -39,10 +39,9 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_hal.h"
-#include "mpu6050.h"
 
 /* USER CODE BEGIN Includes */
-
+#include "mpu6050.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
@@ -88,11 +87,12 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	SD_MPU6050_Result result ;
+	SD_MPU6050_Result result;
 	uint8_t mpu_ok[15] = {"MPU WORK FINE\n"};
 	uint8_t mpu_not[17] = {"MPU NOT WORKING\n"};
 	uint8_t data[100] = {0, };
-	uint8_t speed = 0;
+	uint8_t data2[100] = {0, };
+	int8_t speed;
   /* USER CODE END 1 */
 
   /* MCU Configuration----------------------------------------------------------*/
@@ -120,9 +120,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
   //LEFT WHEEL
   //TIM_CHANNEL_1:SPEED
-  //TIM_CHANNEL_2:BREAK
+  //TIM_CHANNEL_3:BREAK
   //RIGHT WHEEL
-  //TIM_CHANNEL_3:SPEED
+  //TIM_CHANNEL_2:SPEED
   //TIM_CHANNEL_4:BREAK
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
@@ -166,20 +166,36 @@ int main(void)
 	int16_t a_x = mpu1.Accelerometer_X;
 	int16_t a_y = mpu1.Accelerometer_Y;
 	int16_t a_z = mpu1.Accelerometer_Z;
-	sprintf(data, "g_x:%06d, g_y:%06d, g_z:%06d, a_x:%06d, a_y:%06d, a_z:%06d", g_x,g_y,g_z,a_x,a_y,a_z);
-	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
+//	sprintf(data, "g_x:%06d, g_y:%06d, g_z:%06d, a_x:%06d, a_y:%06d, a_z:%06d", g_x,g_y,g_z,a_x,a_y,a_z);
+//	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
 
 	speed = a_y / 1000;
-	__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed);  //45 이상 넘기면 최고속도
-	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed);  //45 이상 넘기면 최고속도
+	if(speed < 0){
+		speed = speed * (-1);
+	}
 
+	sprintf(data, "a_x:%06d // a_y:%06d // speed:%03d", a_x, a_y, speed);
+	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
+
+	if(a_y <300 && a_y > -300){
+	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 10);
+	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 10);
+	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);  //45 이상 넘기면 최고속도
+	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);  //45 이상 넘기면 최고속도
+	}
+	else{
+	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
+	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
+	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed);  //45 이상 넘기면 최고속도
+	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed);  //45 이상 넘기면 최고속도
+	}
     if(a_y > 0){
   	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
-	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
+	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 1);
     }
     else if (a_y < 0){
 	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 1);
-	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 1);
+	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
     }
 
 
@@ -301,7 +317,7 @@ static void MX_TIM1_Init(void)
   }
 
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 45;
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -312,7 +328,6 @@ static void MX_TIM1_Init(void)
     _Error_Handler(__FILE__, __LINE__);
   }
 
-  sConfigOC.Pulse = 30;
   sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
   if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
@@ -343,9 +358,9 @@ static void MX_TIM2_Init(void)
   TIM_OC_InitTypeDef sConfigOC;
 
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
+  htim2.Init.Prescaler = 1000;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 0;
+  htim2.Init.Period = 90;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
   {
