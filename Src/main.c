@@ -42,6 +42,7 @@
 
 /* USER CODE BEGIN Includes */
 #include "mpu6050.h"
+#include "math.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
@@ -49,12 +50,19 @@ I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 SD_MPU6050 mpu1;
+
+uint16_t micros = 0;
+float dt;
+
+
+
 
 /* USER CODE END PV */
 
@@ -65,6 +73,7 @@ static void MX_USART3_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
                                     
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
                                 
@@ -72,10 +81,20 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
+HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if(htim->Instance == TIM3){
+		micros++; //정확한  1us 맞는지 확인할 것.
+	}
 
+}
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+void calcurate_DT(void){
+	dt = ((float)micros / (1000000.0/16.0));
+	micros = 0;
+}
+
 
 /* USER CODE END 0 */
 
@@ -93,6 +112,7 @@ int main(void)
 	uint8_t data[100] = {0, };
 	uint8_t data2[100] = {0, };
 	int8_t speed;
+	double x_angle;
   /* USER CODE END 1 */
 
   /* MCU Configuration----------------------------------------------------------*/
@@ -117,6 +137,7 @@ int main(void)
   MX_TIM1_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   //LEFT WHEEL
   //TIM_CHANNEL_1:SPEED
@@ -129,12 +150,14 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
 
+  HAL_TIM_Base_Start_IT(&htim3);
+
   //LEFT WHEEL
   //GPIO_PIN_14:DIRECTION
   //RIGHT WHEEL
   //GPIO_PIN_15:DIRECTION
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
+//  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
+//  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
 
   /* USER CODE END 2 */
 
@@ -169,6 +192,9 @@ int main(void)
 //	sprintf(data, "g_x:%06d, g_y:%06d, g_z:%06d, a_x:%06d, a_y:%06d, a_z:%06d", g_x,g_y,g_z,a_x,a_y,a_z);
 //	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
 
+	x_angle = -atan((double)a_y/(double)a_z)*180.0 / 3.1416; //가속도 센서 각도구하기
+
+
 	speed = a_y / 1000;
 	if(speed < 0){
 		speed = speed * (-1);
@@ -189,14 +215,14 @@ int main(void)
 	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed);  //45 이상 넘기면 최고속도
 	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed);  //45 이상 넘기면 최고속도
 	}
-    if(a_y > 0){
-  	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
-	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 1);
-    }
-    else if (a_y < 0){
-	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 1);
-	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
-    }
+//    if(a_y > 0){
+//  	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
+//	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 1);
+//    }
+//    else if (a_y < 0){
+//	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 1);
+//	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
+//    }
 
 
 
@@ -392,6 +418,38 @@ static void MX_TIM2_Init(void)
 
 }
 
+/* TIM3 init function */
+static void MX_TIM3_Init(void)
+{
+
+  TIM_ClockConfigTypeDef sClockSourceConfig;
+  TIM_MasterConfigTypeDef sMasterConfig;
+
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 9;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 9;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+}
+
 /* USART3 init function */
 static void MX_USART3_UART_Init(void)
 {
@@ -481,7 +539,7 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /*Configure GPIO pin : RMII_TXD1_Pin */
