@@ -43,10 +43,14 @@
 /* USER CODE BEGIN Includes */
 #include "mpu6050.h"
 #include "math.h"
+#include <string.h>
+
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+
+RTC_HandleTypeDef hrtc;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -59,10 +63,52 @@ UART_HandleTypeDef huart3;
 SD_MPU6050 mpu1;
 
 uint16_t micros = 0;
+
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+
+int16_t AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
+
 float dt;
+float accel_angle_x,    accel_angle_y,    accel_angle_z;
+float filtered_angle_x, filtered_angle_y, filtered_angle_z;
 
+float baseAcX, baseAcY, baseAcZ;
+float baseGyX, baseGyY, baseGyZ;
 
+/* PID값 세팅 */
+float roll_target_angle = 0.0;
+float roll_angle_in;
+float roll_rate_in;
+float roll_stabilize_kp = 1.0;
+float roll_stabilize_ki = 0;
+float roll_rate_kp = 0.6;
+float roll_rate_ki = 0.3;
+float roll_stabilize_iterm;
+float roll_rate_iterm;
+float roll_output;
 
+float pitch_target_angle = 0.0;
+float pitch_angle_in;
+float pitch_rate_in;
+float pitch_stabilize_kp = 1.0;
+float pitch_stabilize_ki = 0;
+float pitch_rate_kp = 0.6;
+float pitch_rate_ki = 0.3;
+float pitch_stabilize_iterm;
+float pitch_rate_iterm;
+float pitch_output;
+
+float yaw_target_angle = 0.0;
+float yaw_angle_in;
+float yaw_rate_in;
+float yaw_stabilize_kp = 1;
+float yaw_stabilize_ki = 0;
+float yaw_rate_kp = 1;
+float yaw_rate_ki = 0;
+float yaw_stabilize_iterm;
+float yaw_rate_iterm;
+float yaw_output;
 
 /* USER CODE END PV */
 
@@ -74,7 +120,8 @@ static void MX_TIM1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
-                                    
+static void MX_RTC_Init(void);
+
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
                                 
                                 
@@ -83,18 +130,208 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 /* Private function prototypes -----------------------------------------------*/
 HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim->Instance == TIM3){
-		micros++; //정확한  1us 맞는지 확인할 것.
+		micros++;
 	}
 
 }
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+
+void readAccelGyro() {
+	SD_MPU6050_ReadAccelerometer(&hi2c1,&mpu1);
+	AcX = mpu1.Accelerometer_X;
+	AcY = mpu1.Accelerometer_Y;
+	AcZ = mpu1.Accelerometer_Z;
+	SD_MPU6050_ReadGyroscope(&hi2c1,&mpu1);
+	GyX = mpu1.Gyroscope_X;
+	GyY = mpu1.Gyroscope_Y;
+	GyZ = mpu1.Gyroscope_Z;
+}
+
+void calibrate_sensors(void) {
+	float sumAcX = 0, sumAcY = 0, sumAcZ = 0;
+	float sumGyX = 0, sumGyY = 0, sumGyZ = 0;
+	int num_readings = 10;
+
+	// Read and average the raw values from the IMU
+	for (int i = 0; i < num_readings; i++) {
+	  readAccelGyro();
+
+	  sumAcX += AcX;
+	  sumAcY += AcY;
+	  sumAcZ += AcZ;
+	  sumGyX += GyX;
+	  sumGyY += GyY;
+	  sumGyZ += GyZ;
+	  HAL_Delay(100);
+	}
+
+	baseAcX = sumAcX / num_readings;
+	baseAcY = sumAcY / num_readings;
+	baseAcZ = sumAcZ / num_readings;
+	baseGyX = sumGyX / num_readings;
+	baseGyY = sumGyY / num_readings;
+	baseGyZ = sumGyZ / num_readings;
+}
+
 void calcurate_DT(void){
-	dt = ((float)micros / (1000000.0/16.0));
+	dt = ((float)micros / (1000000.0 / 90.0));
 	micros = 0;
 }
 
+void calcAccelYPR(void) {
+	float accel_x, accel_y, accel_z;
+	float accel_xz, accel_yz;
+	const float RADIANS_TO_DEGREES = 180 / 3.14159;
+
+	accel_x = AcX - baseAcX;
+	accel_y = AcY - baseAcY;
+	accel_z = AcZ + (16384 - baseAcZ);
+
+	accel_yz = sqrt(pow(accel_y, 2) + pow(accel_z, 2));
+	accel_angle_y = atan(-accel_x / accel_yz) * RADIANS_TO_DEGREES;
+
+	accel_xz = sqrt(pow(accel_x, 2) + pow(accel_z, 2));
+	accel_angle_x = atan( accel_y / accel_xz) * RADIANS_TO_DEGREES;
+
+	accel_angle_z = 0;
+}
+
+float gyro_x, gyro_y, gyro_z;
+
+void calcGyroYPR(void) {
+	const float GYROXYZ_TO_DEGREES_PER_SEC = 131;
+
+	gyro_x = (GyX - baseGyX) / GYROXYZ_TO_DEGREES_PER_SEC;
+	gyro_y = (GyY - baseGyY) / GYROXYZ_TO_DEGREES_PER_SEC;
+	gyro_z = (GyZ - baseGyZ) / GYROXYZ_TO_DEGREES_PER_SEC;
+
+	//  gyro_angle_x += gyro_x * dt;
+	//  gyro_angle_y += gyro_y * dt;
+	//  gyro_angle_z += gyro_z * dt;
+}
+
+void calcFilteredYPR(void) {
+	const float ALPHA = 0.96;
+	float tmp_angle_x, tmp_angle_y, tmp_angle_z;
+
+	tmp_angle_x = filtered_angle_x + gyro_x * dt;
+	tmp_angle_y = filtered_angle_y + gyro_y * dt;
+	tmp_angle_z = filtered_angle_z + gyro_z * dt;
+
+	/* 간단한 선형 필터를 적용하여 값을 안정화합니다. */
+	/* Edu
+	filtered_angle_x = ALPHA * tmp_angle_x + (1.0-ALPHA) * accel_angle_x;
+	filtered_angle_y = 0; // 값을 지정해야 합니다.
+	filtered_angle_z = 0; // 값을 지정해야 합니다.
+	*/
+
+	/* Sample */
+//	filtered_angle_x = ALPHA * tmp_angle_x + (1.0 - ALPHA) * accel_angle_x;
+//	filtered_angle_y = ALPHA * tmp_angle_y + (1.0 - ALPHA) * accel_angle_y;
+//	filtered_angle_z = tmp_angle_z; // Accel 값으로는 Yaw 변화 감지가 불가능합니다. 지자기계 등 추가필요.
+
+	filtered_angle_x = ALPHA * accel_angle_x + (1.0 - ALPHA) * tmp_angle_x;
+	filtered_angle_y = ALPHA * accel_angle_y + (1.0 - ALPHA) * tmp_angle_y;
+	filtered_angle_z = tmp_angle_z; // Accel 값으로는 Yaw 변화 감지가 불가능합니다. 지자기계 등 추가필요.
+}
+
+float base_roll_target_angle;
+float base_pitch_target_angle;
+float base_yaw_target_angle;
+
+extern float roll_target_angle;
+extern float pitch_target_angle;
+extern float yaw_target_angle;
+
+void initYPR(void) {
+
+	for (int i = 0; i < 10; i++) {
+		readAccelGyro();
+		calcurate_DT();
+		calcAccelYPR();
+		calcGyroYPR();
+		calcFilteredYPR();
+
+		base_roll_target_angle += filtered_angle_y;
+		base_pitch_target_angle += filtered_angle_x;
+		base_yaw_target_angle += filtered_angle_z;
+
+		HAL_Delay(100);
+	}
+
+	base_roll_target_angle /= 10;
+	base_pitch_target_angle /= 10;
+	base_yaw_target_angle /= 10;
+
+	roll_target_angle = base_roll_target_angle;
+	pitch_target_angle = base_pitch_target_angle;
+	yaw_target_angle = base_yaw_target_angle;
+}
+
+void dualPID(float target_angle, float angle_in, float rate_in, float stabilize_kp, float stabilize_ki, float rate_kp,
+             float rate_ki, float *stabilize_iterm, float *rate_iterm, float *output) {
+	float angle_error;
+	float desired_rate;
+	float rate_error;
+	float stabilize_pterm, rate_pterm;
+
+	angle_error = target_angle - angle_in;
+
+	stabilize_pterm  = stabilize_kp * angle_error;
+	(*stabilize_iterm) += stabilize_ki * angle_error * dt; // dt 를 계산하여야 합니다.
+
+	desired_rate = stabilize_pterm;
+
+	rate_error = desired_rate - rate_in;
+
+	rate_pterm  = rate_kp * rate_error;
+	(*rate_iterm) += rate_ki * rate_error * dt;
+
+	(*output) = rate_pterm + (*rate_iterm) + (*stabilize_iterm);
+}
+
+void calcYPRtoDualPID() {
+	roll_angle_in = filtered_angle_y;
+	roll_rate_in = gyro_y;
+	dualPID(  roll_target_angle,
+	          roll_angle_in,
+	          roll_rate_in,
+	          roll_stabilize_kp,
+	          roll_stabilize_ki,
+	          roll_rate_kp,
+	          roll_rate_ki,
+	          &roll_stabilize_iterm,
+	          &roll_rate_iterm,
+	          &roll_output);
+
+	pitch_angle_in = filtered_angle_x;
+	pitch_rate_in = gyro_x;
+	dualPID(pitch_target_angle,
+	        pitch_angle_in,
+	        pitch_rate_in,
+	        pitch_stabilize_kp,
+	        pitch_stabilize_ki,
+	        pitch_rate_kp,
+	        pitch_rate_ki,
+	        &pitch_stabilize_iterm,
+	        &pitch_rate_iterm,
+	        &pitch_output);
+
+	yaw_angle_in = filtered_angle_z;
+	yaw_rate_in = gyro_z;
+	dualPID(  yaw_target_angle,
+	          yaw_angle_in,
+	          yaw_rate_in,
+	          yaw_stabilize_kp,
+	          yaw_stabilize_ki,
+	          yaw_rate_kp,
+	          yaw_rate_ki,
+	          &yaw_stabilize_iterm,
+	          &yaw_rate_iterm,
+	          &yaw_output);
+}
 
 /* USER CODE END 0 */
 
@@ -112,7 +349,13 @@ int main(void)
 	uint8_t data[100] = {0, };
 	uint8_t data2[100] = {0, };
 	int8_t speed;
-	double x_angle;
+	double angle_accel;
+	double angle_gyro;
+	double angle_gyro_integral = 0;
+	float angle_final;
+	float alpha = 0.96;
+
+
   /* USER CODE END 1 */
 
   /* MCU Configuration----------------------------------------------------------*/
@@ -138,6 +381,7 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
   //LEFT WHEEL
   //TIM_CHANNEL_1:SPEED
@@ -163,68 +407,54 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  result = SD_MPU6050_Init(&hi2c1,&mpu1,SD_MPU6050_Device_0,SD_MPU6050_Accelerometer_2G,SD_MPU6050_Gyroscope_250s );
+  HAL_Delay(1000);
+  if(result == SD_MPU6050_Result_Ok){
+	HAL_UART_Transmit_IT(&huart3,mpu_ok,(uint16_t)15);
+  }
+  else{
+	HAL_UART_Transmit_IT(&huart3,mpu_not,(uint16_t)17);
+	while(1){
+	  result = SD_MPU6050_Init(&hi2c1,&mpu1,SD_MPU6050_Device_0,SD_MPU6050_Accelerometer_2G,SD_MPU6050_Gyroscope_250s );
+	  HAL_UART_Transmit_IT(&huart3,mpu_not,(uint16_t)17);
+	  HAL_Delay(500);
+	  if(result == SD_MPU6050_Result_Ok){
+		break;
+	  }
+	}
+  }
+  HAL_Delay(500);
+
+  calibrate_sensors();
+  initYPR();
+
   while (1)
   {
-    result = SD_MPU6050_Init(&hi2c1,&mpu1,SD_MPU6050_Device_0,SD_MPU6050_Accelerometer_2G,SD_MPU6050_Gyroscope_250s );
-	HAL_Delay(500);
+
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
-	if(result == SD_MPU6050_Result_Ok)
-	{
-		HAL_UART_Transmit_IT(&huart3,mpu_ok,(uint16_t)15);
-	}
-	else
-	{
-		HAL_UART_Transmit_IT(&huart3,mpu_not,(uint16_t)17);
-	}
-	HAL_Delay(500);
-	SD_MPU6050_ReadTemperature(&hi2c1,&mpu1);
-	float temper = mpu1.Temperature;
-	SD_MPU6050_ReadGyroscope(&hi2c1,&mpu1);
-	int16_t g_x = mpu1.Gyroscope_X;
-	int16_t g_y = mpu1.Gyroscope_Y;
-	int16_t g_z = mpu1.Gyroscope_Z;
-	SD_MPU6050_ReadAccelerometer(&hi2c1,&mpu1);
-	int16_t a_x = mpu1.Accelerometer_X;
-	int16_t a_y = mpu1.Accelerometer_Y;
-	int16_t a_z = mpu1.Accelerometer_Z;
-//	sprintf(data, "g_x:%06d, g_y:%06d, g_z:%06d, a_x:%06d, a_y:%06d, a_z:%06d", g_x,g_y,g_z,a_x,a_y,a_z);
-//	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
 
-	x_angle = -atan((double)a_y/(double)a_z)*180.0 / 3.1416; //가속도 센서 각도구하기
+	calcurate_DT();
+	readAccelGyro();
+	calcAccelYPR();
+	calcGyroYPR();
+	calcFilteredYPR();
 
 
-	speed = a_y / 1000;
-	if(speed < 0){
-		speed = speed * (-1);
-	}
+//	angle_accel = -atan((double)a_y/(double)a_z) * 57.3;
+//	//(180/pi=57.3)가속도 센서 각도구하기
+//
+//	//angle_gyro_integral += (-g_y/16383.0*90.0) * dt;
+//	angle_gyro = (g_y - base_y_gyro) / 131;
+	//자이로 센서의 값도 -32768에서 32767 값을 가질 수 있다.
+	//FS_SEL 레지스터가 =일 경우 -250 에서 +250까지 측정되며 이 값은 -32768에서 32767까지 매핑된다.
+	//1초 동안 일정한 속도로 1도 회전하였다고 한다면 250도/s 는 32767 이므로 1도/s는 (32767/250) = 131이 된다.
+//
+//	angle_final = alpha * angle_gyro + (1.0-alpha) * angle_accel;
 
-	sprintf(data, "a_x:%06d // a_y:%06d // speed:%03d", a_x, a_y, speed);
+	sprintf(data, "filtered_angle_x : %f\n", filtered_angle_x);
 	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
-
-	if(a_y <300 && a_y > -300){
-	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 10);
-	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 10);
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);  //45 이상 넘기면 최고속도
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);  //45 이상 넘기면 최고속도
-	}
-	else{
-	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
-	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed);  //45 이상 넘기면 최고속도
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed);  //45 이상 넘기면 최고속도
-	}
-//    if(a_y > 0){
-//  	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
-//	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 1);
-//    }
-//    else if (a_y < 0){
-//	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 1);
-//	  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0);
-//    }
-
-
 
   }
   /* USER CODE END 3 */
@@ -240,6 +470,7 @@ void SystemClock_Config(void)
 
   RCC_OscInitTypeDef RCC_OscInitStruct;
   RCC_ClkInitTypeDef RCC_ClkInitStruct;
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct;
 
     /**Configure the main internal regulator output voltage 
     */
@@ -249,7 +480,8 @@ void SystemClock_Config(void)
 
     /**Initializes the CPU, AHB and APB busses clocks 
     */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = 16;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -284,6 +516,13 @@ void SystemClock_Config(void)
     _Error_Handler(__FILE__, __LINE__);
   }
 
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+  PeriphClkInitStruct.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
     /**Configure the Systick interrupt time 
     */
   HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000);
@@ -313,6 +552,37 @@ static void MX_I2C1_Init(void)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
+
+}
+
+/* RTC init function */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+    /**Initialize RTC Only 
+    */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
 
 }
 
