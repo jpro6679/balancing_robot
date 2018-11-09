@@ -62,6 +62,7 @@ UART_HandleTypeDef huart3;
 /* Private variables ---------------------------------------------------------*/
 SD_MPU6050 mpu1;
 
+int8_t count = 0;
 uint16_t micros = 0;
 
 int16_t ax, ay, az;
@@ -130,7 +131,10 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 /* Private function prototypes -----------------------------------------------*/
 HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim->Instance == TIM3){
-		micros++;
+		if(++count == 7){ //5
+			count = 0;
+			micros++;
+		}
 	}
 
 }
@@ -176,7 +180,7 @@ void calibrate_sensors(void) {
 }
 
 void calcurate_DT(void){
-	dt = ((float)micros / (1000000.0 / 90.0));
+	dt = ((float)micros / (1000000.0 / 16.0));
 	micros = 0;
 }
 
@@ -213,7 +217,7 @@ void calcGyroYPR(void) {
 }
 
 void calcFilteredYPR(void) {
-	const float ALPHA = 0.96;
+	const float ALPHA = 0.97;
 	float tmp_angle_x, tmp_angle_y, tmp_angle_z;
 
 	tmp_angle_x = filtered_angle_x + gyro_x * dt;
@@ -228,12 +232,11 @@ void calcFilteredYPR(void) {
 	*/
 
 	/* Sample */
-//	filtered_angle_x = ALPHA * tmp_angle_x + (1.0 - ALPHA) * accel_angle_x;
-//	filtered_angle_y = ALPHA * tmp_angle_y + (1.0 - ALPHA) * accel_angle_y;
-//	filtered_angle_z = tmp_angle_z; // Accel 값으로는 Yaw 변화 감지가 불가능합니다. 지자기계 등 추가필요.
+	filtered_angle_x = ALPHA * tmp_angle_x + (1.0 - ALPHA) * accel_angle_x;
+	filtered_angle_y = ALPHA * tmp_angle_y + (1.0 - ALPHA) * accel_angle_y;
 
-	filtered_angle_x = ALPHA * accel_angle_x + (1.0 - ALPHA) * tmp_angle_x;
-	filtered_angle_y = ALPHA * accel_angle_y + (1.0 - ALPHA) * tmp_angle_y;
+//	filtered_angle_x = ALPHA * accel_angle_x + (1.0 - ALPHA) * tmp_angle_x;
+//	filtered_angle_y = ALPHA * accel_angle_y + (1.0 - ALPHA) * tmp_angle_y;
 	filtered_angle_z = tmp_angle_z; // Accel 값으로는 Yaw 변화 감지가 불가능합니다. 지자기계 등 추가필요.
 }
 
@@ -453,8 +456,13 @@ int main(void)
 //
 //	angle_final = alpha * angle_gyro + (1.0-alpha) * angle_accel;
 
+
+	//이동시에 speed핀에 pwm주면서 pitch_target_angle 변수 +=5, -=5
+	//현재각도 filtered_angle_x변수 이용
+
 	sprintf(data, "filtered_angle_x : %f\n", filtered_angle_x);
 	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
+
 
   }
   /* USER CODE END 3 */
