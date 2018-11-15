@@ -60,10 +60,22 @@ UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+#define THROTTLE_MAX 30
+#define THROTTLE_MIN 0
+#define THROTTLE_INI 1
+
+float throttle = THROTTLE_MIN;
+float motorA_speed = THROTTLE_MIN;
+float motorB_speed = THROTTLE_MIN;
+
 SD_MPU6050 mpu1;
+
+uint8_t data[100] = {0, };
 
 int8_t count = 0;
 uint16_t micros = 0;
+uint32_t t_now;
+uint32_t t_prev;
 
 int16_t ax, ay, az;
 int16_t gx, gy, gz;
@@ -72,44 +84,42 @@ int16_t AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
 
 float dt;
 float accel_angle_x,    accel_angle_y,    accel_angle_z;
+float gyro_angle_x = 0, gyro_angle_y = 0, gyro_angle_z = 0;
 float filtered_angle_x, filtered_angle_y, filtered_angle_z;
 
 float baseAcX, baseAcY, baseAcZ;
 float baseGyX, baseGyY, baseGyZ;
 
 /* PID값 세팅 */
+#define pp 0.5
+#define ii 0.9
+#define dd 0.1
+
 float roll_target_angle = 0.0;
-float roll_angle_in;
-float roll_rate_in;
-float roll_stabilize_kp = 1.0;
-float roll_stabilize_ki = 0;
-float roll_rate_kp = 0.6;
-float roll_rate_ki = 0.3;
-float roll_stabilize_iterm;
-float roll_rate_iterm;
+float roll_prev_angle = 0.0;
+float roll_kp = pp;
+float roll_ki = ii;
+float roll_kd = dd;
+float roll_iterm;
 float roll_output;
+float motor_speed;
 
 float pitch_target_angle = 0.0;
-float pitch_angle_in;
-float pitch_rate_in;
-float pitch_stabilize_kp = 1.0;
-float pitch_stabilize_ki = 0;
-float pitch_rate_kp = 0.6;
-float pitch_rate_ki = 0.3;
-float pitch_stabilize_iterm;
-float pitch_rate_iterm;
+float pitch_prev_angle = 0.0;
+float pitch_kp = pp;
+float pitch_ki = ii;
+float pitch_kd = dd;
+float pitch_iterm;
 float pitch_output;
 
-float yaw_target_angle = 0.0;
-float yaw_angle_in;
-float yaw_rate_in;
-float yaw_stabilize_kp = 1;
-float yaw_stabilize_ki = 0;
-float yaw_rate_kp = 1;
-float yaw_rate_ki = 0;
-float yaw_stabilize_iterm;
-float yaw_rate_iterm;
+float yaw_target_angle = 1.0;
+float yaw_prev_angle = 0.0;
+float yaw_kp = 1;
+float yaw_ki = 0.0;
+float yaw_kd = 0.0;
+float yaw_iterm;
 float yaw_output;
+
 
 /* USER CODE END PV */
 
@@ -131,18 +141,22 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 /* Private function prototypes -----------------------------------------------*/
 HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim->Instance == TIM3){
-		if(++count == 7){ //5
-			count = 0;
-			micros++;
-		}
+		micros++;
 	}
-
 }
+//HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+//	if(htim->Instance == TIM3){
+//		if(++count == 7){ //5
+//			count = 0;
+//			micros++;
+//		}
+//	}
+//
+//}
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
-
-void readAccelGyro() {
+void readAccelGyro(void) { //가속도 자이로 센서의 값을 읽음
 	SD_MPU6050_ReadAccelerometer(&hi2c1,&mpu1);
 	AcX = mpu1.Accelerometer_X;
 	AcY = mpu1.Accelerometer_Y;
@@ -158,7 +172,7 @@ void calibrate_sensors(void) {
 	float sumGyX = 0, sumGyY = 0, sumGyZ = 0;
 	int num_readings = 10;
 
-	// Read and average the raw values from the IMU
+	// 가속도 자이로 센서에서 10번 읽어드린 값을 토대로 평균을 냄
 	for (int i = 0; i < num_readings; i++) {
 	  readAccelGyro();
 
@@ -179,12 +193,17 @@ void calibrate_sensors(void) {
 	baseGyZ = sumGyZ / num_readings;
 }
 
-void calcurate_DT(void){
-	dt = ((float)micros / (1000000.0 / 16.0));
-	micros = 0;
+void init_DT(void){
+	t_prev = micros;
 }
 
-void calcAccelYPR(void) {
+void calc_DT(void){
+	t_now = micros;
+	dt = ((float)t_now - (float)t_prev) / 1000000.0;
+	t_prev = t_now;
+}
+
+void calcAccelYPR(void) { //가속도 센서값 처리
 	float accel_x, accel_y, accel_z;
 	float accel_xz, accel_yz;
 	const float RADIANS_TO_DEGREES = 180 / 3.14159;
@@ -204,136 +223,84 @@ void calcAccelYPR(void) {
 
 float gyro_x, gyro_y, gyro_z;
 
-void calcGyroYPR(void) {
+void calcGyroYPR(void) { //자이로 센서값 처리
 	const float GYROXYZ_TO_DEGREES_PER_SEC = 131;
 
 	gyro_x = (GyX - baseGyX) / GYROXYZ_TO_DEGREES_PER_SEC;
 	gyro_y = (GyY - baseGyY) / GYROXYZ_TO_DEGREES_PER_SEC;
 	gyro_z = (GyZ - baseGyZ) / GYROXYZ_TO_DEGREES_PER_SEC;
 
-	//  gyro_angle_x += gyro_x * dt;
-	//  gyro_angle_y += gyro_y * dt;
-	//  gyro_angle_z += gyro_z * dt;
+//	gyro_angle_x += gyro_x * dt;
+//	gyro_angle_y += gyro_y * dt;
+//	gyro_angle_z += gyro_z * dt;
 }
 
-void calcFilteredYPR(void) {
-	const float ALPHA = 0.97;
+void calcFilteredYPR(void) { //상보필터
+	const float ALPHA = 0.96;
 	float tmp_angle_x, tmp_angle_y, tmp_angle_z;
 
 	tmp_angle_x = filtered_angle_x + gyro_x * dt;
 	tmp_angle_y = filtered_angle_y + gyro_y * dt;
 	tmp_angle_z = filtered_angle_z + gyro_z * dt;
 
-	/* 간단한 선형 필터를 적용하여 값을 안정화합니다. */
-	/* Edu
-	filtered_angle_x = ALPHA * tmp_angle_x + (1.0-ALPHA) * accel_angle_x;
-	filtered_angle_y = 0; // 값을 지정해야 합니다.
-	filtered_angle_z = 0; // 값을 지정해야 합니다.
-	*/
 
-	/* Sample */
 	filtered_angle_x = ALPHA * tmp_angle_x + (1.0 - ALPHA) * accel_angle_x;
 	filtered_angle_y = ALPHA * tmp_angle_y + (1.0 - ALPHA) * accel_angle_y;
 
-//	filtered_angle_x = ALPHA * accel_angle_x + (1.0 - ALPHA) * tmp_angle_x;
-//	filtered_angle_y = ALPHA * accel_angle_y + (1.0 - ALPHA) * tmp_angle_y;
 	filtered_angle_z = tmp_angle_z; // Accel 값으로는 Yaw 변화 감지가 불가능합니다. 지자기계 등 추가필요.
 }
 
-float base_roll_target_angle;
-float base_pitch_target_angle;
-float base_yaw_target_angle;
+//표준 PID 제어기
+void stdPID(float setpoint, float input, float *prev_input, float kp, float ki, float kd, float *iterm, float *output){
+	float error;
+	float dInput;
+	float pterm, dterm;
 
-extern float roll_target_angle;
-extern float pitch_target_angle;
-extern float yaw_target_angle;
+	error = setpoint - input; // 오차 = 설정값 - 현재입력값
+	dInput = input - (*prev_input);
+	(*prev_input) = input; //다음 주기에 사용하기 위해서 현재 입력값을 저장
 
-void initYPR(void) {
+	//pid제어//
+	pterm = kp * error; //비례항
+	(*iterm) += ki * error * dt; //적분항(현재 오차에서 센서입력주기(dt)값을 곱한다.
+	dterm = -kd * (dInput / dt); //미분항(미분항은 외력에 의한 변경이므로 setpoint에 의한 내부적인 요소를 제외해야한다. (-)추가
 
-	for (int i = 0; i < 10; i++) {
-		readAccelGyro();
-		calcurate_DT();
-		calcAccelYPR();
-		calcGyroYPR();
-		calcFilteredYPR();
+	(*output) = pterm + (*iterm) + dterm; //output값으로 pid요소를 합한다.
 
-		base_roll_target_angle += filtered_angle_y;
-		base_pitch_target_angle += filtered_angle_x;
-		base_yaw_target_angle += filtered_angle_z;
 
-		HAL_Delay(100);
+
+}
+
+void calcYPRtoStdPID(){
+  stdPID(roll_target_angle, filtered_angle_y, &roll_prev_angle, roll_kp, roll_ki, roll_kd, &roll_iterm, &roll_output);
+  stdPID(pitch_target_angle, filtered_angle_x, &pitch_prev_angle, pitch_kp, pitch_ki, pitch_kd, &pitch_iterm, &pitch_output);
+  stdPID(yaw_target_angle, filtered_angle_z, &yaw_prev_angle, yaw_kp, yaw_ki, yaw_kd, &yaw_iterm, &yaw_output);
+}
+
+
+void calcMotorSpeed(void){
+	motor_speed = pitch_target_angle - pitch_output; //조종시 pitch_target_angle -> throttle
+
+	if(motor_speed < 0){
+		if(motor_speed <= -20)	motor_speed = -20;
+		 HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0); //방향설정 둘중하나는 1
+		 HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 0); //방향설정 둘중하나는 1
+		 __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, abs((uint8_t)motor_speed));
+		 __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, abs((uint8_t)motor_speed));
 	}
-
-	base_roll_target_angle /= 10;
-	base_pitch_target_angle /= 10;
-	base_yaw_target_angle /= 10;
-
-	roll_target_angle = base_roll_target_angle;
-	pitch_target_angle = base_pitch_target_angle;
-	yaw_target_angle = base_yaw_target_angle;
+	else{
+		if(motor_speed >= 20)	motor_speed = 20;
+		HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 1); //방향설정 둘중하나는 0
+		HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, 1); //방향설정 둘중하나는 0
+		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint8_t)motor_speed);
+		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (uint8_t)motor_speed);
+	}
 }
 
-void dualPID(float target_angle, float angle_in, float rate_in, float stabilize_kp, float stabilize_ki, float rate_kp,
-             float rate_ki, float *stabilize_iterm, float *rate_iterm, float *output) {
-	float angle_error;
-	float desired_rate;
-	float rate_error;
-	float stabilize_pterm, rate_pterm;
+void SendDataToProcessing(void){
 
-	angle_error = target_angle - angle_in;
-
-	stabilize_pterm  = stabilize_kp * angle_error;
-	(*stabilize_iterm) += stabilize_ki * angle_error * dt; // dt 를 계산하여야 합니다.
-
-	desired_rate = stabilize_pterm;
-
-	rate_error = desired_rate - rate_in;
-
-	rate_pterm  = rate_kp * rate_error;
-	(*rate_iterm) += rate_ki * rate_error * dt;
-
-	(*output) = rate_pterm + (*rate_iterm) + (*stabilize_iterm);
-}
-
-void calcYPRtoDualPID() {
-	roll_angle_in = filtered_angle_y;
-	roll_rate_in = gyro_y;
-	dualPID(  roll_target_angle,
-	          roll_angle_in,
-	          roll_rate_in,
-	          roll_stabilize_kp,
-	          roll_stabilize_ki,
-	          roll_rate_kp,
-	          roll_rate_ki,
-	          &roll_stabilize_iterm,
-	          &roll_rate_iterm,
-	          &roll_output);
-
-	pitch_angle_in = filtered_angle_x;
-	pitch_rate_in = gyro_x;
-	dualPID(pitch_target_angle,
-	        pitch_angle_in,
-	        pitch_rate_in,
-	        pitch_stabilize_kp,
-	        pitch_stabilize_ki,
-	        pitch_rate_kp,
-	        pitch_rate_ki,
-	        &pitch_stabilize_iterm,
-	        &pitch_rate_iterm,
-	        &pitch_output);
-
-	yaw_angle_in = filtered_angle_z;
-	yaw_rate_in = gyro_z;
-	dualPID(  yaw_target_angle,
-	          yaw_angle_in,
-	          yaw_rate_in,
-	          yaw_stabilize_kp,
-	          yaw_stabilize_ki,
-	          yaw_rate_kp,
-	          yaw_rate_ki,
-	          &yaw_stabilize_iterm,
-	          &yaw_rate_iterm,
-	          &yaw_output);
+	sprintf((uint8_t*)data, "filtered_angle_x : %f, motor_speed : %f\n",filtered_angle_x,motor_speed);
+	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
 }
 
 /* USER CODE END 0 */
@@ -349,15 +316,6 @@ int main(void)
 	SD_MPU6050_Result result;
 	uint8_t mpu_ok[15] = {"MPU WORK FINE\n"};
 	uint8_t mpu_not[17] = {"MPU NOT WORKING\n"};
-	uint8_t data[100] = {0, };
-	uint8_t data2[100] = {0, };
-	int8_t speed;
-	double angle_accel;
-	double angle_gyro;
-	double angle_gyro_integral = 0;
-	float angle_final;
-	float alpha = 0.96;
-
 
   /* USER CODE END 1 */
 
@@ -428,8 +386,9 @@ int main(void)
   }
   HAL_Delay(500);
 
+  init_DT();
   calibrate_sensors();
-  initYPR();
+//  initYPR();
 
   while (1)
   {
@@ -438,30 +397,20 @@ int main(void)
 
   /* USER CODE BEGIN 3 */
 
-	calcurate_DT();
+	calc_DT();
 	readAccelGyro();
 	calcAccelYPR();
 	calcGyroYPR();
 	calcFilteredYPR();
+	calcYPRtoStdPID();
+	calcMotorSpeed();
 
+	static int cnt;
+	cnt++;
+	if(cnt%2==0){
+		SendDataToProcessing(); //ypr에 대한 각도 정보를 보냄
+	}
 
-//	angle_accel = -atan((double)a_y/(double)a_z) * 57.3;
-//	//(180/pi=57.3)가속도 센서 각도구하기
-//
-//	//angle_gyro_integral += (-g_y/16383.0*90.0) * dt;
-//	angle_gyro = (g_y - base_y_gyro) / 131;
-	//자이로 센서의 값도 -32768에서 32767 값을 가질 수 있다.
-	//FS_SEL 레지스터가 =일 경우 -250 에서 +250까지 측정되며 이 값은 -32768에서 32767까지 매핑된다.
-	//1초 동안 일정한 속도로 1도 회전하였다고 한다면 250도/s 는 32767 이므로 1도/s는 (32767/250) = 131이 된다.
-//
-//	angle_final = alpha * angle_gyro + (1.0-alpha) * angle_accel;
-
-
-	//이동시에 speed핀에 pwm주면서 pitch_target_angle 변수 +=5, -=5
-	//현재각도 filtered_angle_x변수 이용
-
-	sprintf(data, "filtered_angle_x : %f\n", filtered_angle_x);
-	HAL_UART_Transmit_IT(&huart3,data,(uint16_t)strlen(data));
 
 
   }

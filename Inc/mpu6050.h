@@ -72,7 +72,7 @@ typedef enum {
 /**
  * @brief  Main MPU6050 structure
  */
-typedef struct  {
+typedef struct {
 	/* Private */
 	uint8_t Address;         /*!< I2C address of device. */
 	float Gyro_Mult;         /*!< Gyroscope corrector from raw data to "degrees/s". Only for private use */
